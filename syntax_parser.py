@@ -8,6 +8,63 @@ Implementa análise descendente recursiva baseada na gramática fornecida
 from typing import List, Optional, Any
 from lexer import Token
 
+class SyntaxError(Exception):
+    """Classe para erros sintáticos com informações detalhadas"""
+    def __init__(self, message: str, linha: int, coluna: int, token_atual: Token = None, 
+                 tokens_esperados: List[str] = None, contexto: str = ""):
+        self.message = message
+        self.linha = linha
+        self.coluna = coluna
+        self.token_atual = token_atual
+        self.tokens_esperados = tokens_esperados or []
+        self.contexto = contexto
+    
+    def __str__(self):
+        resultado = f"ERRO SINTÁTICO na linha {self.linha}, coluna {self.coluna}:\n"
+        resultado += f"  {self.message}\n"
+        
+        if self.token_atual:
+            resultado += f"  Token encontrado: {self.token_atual.tipo} ('{self.token_atual.valor}')\n"
+        
+        if self.tokens_esperados:
+            resultado += f"  Tokens esperados: {', '.join(self.tokens_esperados)}\n"
+        
+        # Adicionar sugestões de correção
+        sugestao = self.get_suggestion()
+        if sugestao:
+            resultado += f"  >> Sugestao: {sugestao}\n"
+        
+        if self.contexto:
+            resultado += f"  Contexto:\n{self.contexto}\n"
+        
+        return resultado
+    
+    def get_suggestion(self) -> str:
+        """Retorna sugestões de correção baseadas no erro"""
+        if not self.token_atual or not self.tokens_esperados:
+            return ""
+        
+        token_atual = self.token_atual.tipo
+        tokens_esperados = self.tokens_esperados
+        
+        # Sugestões específicas baseadas no contexto
+        if 'DOUBLE' in tokens_esperados and token_atual == 'ID':
+            return "Adicione o tipo 'double' antes do identificador"
+        elif 'ASSIGN' in tokens_esperados and token_atual == 'ID':
+            return "Use '=' para atribuição ou adicione o tipo antes do identificador"
+        elif 'SEMICOLON' in tokens_esperados:
+            return "Adicione ';' no final da declaração/comando"
+        elif 'LPAREN' in tokens_esperados:
+            return "Adicione '(' para abrir parênteses"
+        elif 'RPAREN' in tokens_esperados:
+            return "Adicione ')' para fechar parênteses"
+        elif 'LBRACE' in tokens_esperados:
+            return "Adicione '{' para abrir chaves"
+        elif 'RBRACE' in tokens_esperados:
+            return "Adicione '}' para fechar chaves"
+        
+        return ""
+
 class ASTNode:
     """Nó da Árvore Sintática Abstrata"""
     def __init__(self, tipo: str, valor: str = "", filhos: List['ASTNode'] = None):
@@ -23,12 +80,25 @@ class ASTNode:
         if self.valor:
             return f"{self.tipo}({self.valor})"
         return self.tipo
+    
+    def print_tree(self, indent: int = 0):
+        """Imprime a árvore sintática de forma hierárquica"""
+        prefix = "  " * indent
+        if self.valor:
+            print(f"{prefix}{self.tipo}: {self.valor}")
+        else:
+            print(f"{prefix}{self.tipo}")
+        
+        for child in self.filhos:
+            child.print_tree(indent + 1)
 
 class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.current = 0
         self.ast = None
+        self.erros = []  # Lista para coletar múltiplos erros
+        self.source_lines = []  # Linhas do código fonte para contexto
     
     def parse(self) -> ASTNode:
         """Inicia a análise sintática"""
@@ -36,6 +106,28 @@ class Parser:
         if self.current < len(self.tokens) - 1:  # -1 porque o último é EOF
             raise SyntaxError(f"Tokens extras após análise: {self.tokens[self.current:]}")
         return self.ast
+    
+    def print_ast(self):
+        """Imprime a árvore sintática abstrata"""
+        if self.ast:
+            print("=== ÁRVORE SINTÁTICA ABSTRATA (AST) ===")
+            self.ast.print_tree()
+        else:
+            print("Nenhuma AST disponível. Execute parse() primeiro.")
+    
+    def print_erros(self):
+        """Imprime todos os erros sintáticos encontrados"""
+        if self.erros:
+            print(f"\n=== ERROS SINTÁTICOS ENCONTRADOS ({len(self.erros)}) ===")
+            for i, erro in enumerate(self.erros, 1):
+                print(f"\nErro {i}:")
+                print(erro)
+        else:
+            print("Nenhum erro sintático encontrado.")
+    
+    def set_source_lines(self, lines: List[str]):
+        """Define as linhas do código fonte para contexto de erro"""
+        self.source_lines = lines
     
     def current_token(self) -> Token:
         """Retorna o token atual"""
@@ -70,7 +162,32 @@ class Parser:
             return self.advance()
         else:
             expected = " | ".join(expected_types)
-            raise SyntaxError(f"Esperado {expected}, encontrado {token.tipo} na linha {token.linha}")
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message=f"Esperado {expected}, encontrado {token.tipo}",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=expected_types,
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
+    
+    def get_context(self, linha: int, raio: int = 2) -> str:
+        """Retorna contexto ao redor da linha com erro"""
+        if not self.source_lines:
+            return ""
+        
+        inicio = max(0, linha - raio - 1)
+        fim = min(len(self.source_lines), linha + raio)
+        
+        contexto = []
+        for i in range(inicio, fim):
+            prefixo = ">>> " if i + 1 == linha else "    "
+            contexto.append(f"{prefixo}{i+1:3d}: {self.source_lines[i]}")
+        
+        return "\n".join(contexto)
     
     # Regras da gramática
     
@@ -117,21 +234,23 @@ class Parser:
         
         while not self.match(['RBRACE', 'EOF']):
             if self.match(['DOUBLE']):
-                # Declaração de variável
+                # DC -> <VAR> <MAIS_CMDS>
                 decl = self.dc()
                 node.add_child(decl)
             elif self.match(['IF', 'WHILE']):
-                # Comando condicional
+                # CMD_COND -> if/while com <CMDS> recursivo
                 cmd_cond = self.cmd_cond()
                 node.add_child(cmd_cond)
             elif self.match(['SYSTEM', 'ID']):
-                # Comando simples
+                # CMD -> System.out.println ou id <RESTO_IDENT>
                 cmd = self.cmd()
                 node.add_child(cmd)
-                if self.match(['SEMICOLON']):
-                    self.consume(['SEMICOLON'])
+                # MAIS_CMDS -> ;<CMDS>
+                mais_cmds = self.mais_cmds()
+                if mais_cmds.filhos:
+                    node.add_child(mais_cmds)
             else:
-                # Não há mais comandos
+                # λ (lambda) - não há mais comandos
                 break
         
         return node
@@ -141,9 +260,20 @@ class Parser:
         node = ASTNode("DC")
         var_node = self.var()
         node.add_child(var_node)
-        # Consumir o ponto e vírgula após a declaração
+        # MAIS_CMDS -> ;<CMDS>
+        self.consume(['SEMICOLON'])  # Obrigatório segundo a gramática
+        mais_cmds = self.mais_cmds()
+        if mais_cmds.filhos:  # Se há filhos, adiciona
+            node.add_child(mais_cmds)
+        return node
+    
+    def mais_cmds(self) -> ASTNode:
+        """MAIS_CMDS -> ;<CMDS>"""
+        node = ASTNode("MAIS_CMDS")
         if self.match(['SEMICOLON']):
             self.consume(['SEMICOLON'])
+            cmds = self.cmds()
+            node.add_child(cmds)
         return node
     
     def var(self) -> ASTNode:
@@ -210,7 +340,18 @@ class Parser:
             self.consume(['RBRACE'])
             return node
         else:
-            raise SyntaxError(f"Esperado IF ou WHILE, encontrado {self.current_token().tipo}")
+            token = self.current_token()
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Esperado IF ou WHILE",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['IF', 'WHILE'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
     
     def cmd(self) -> ASTNode:
         """CMD -> System.out.println (<EXPRESSAO>) 
@@ -235,7 +376,18 @@ class Parser:
             node.add_child(resto)
             return node
         else:
-            raise SyntaxError(f"Esperado SYSTEM ou ID, encontrado {self.current_token().tipo}")
+            token = self.current_token()
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Esperado SYSTEM ou ID",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['SYSTEM', 'ID'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
     
     def pfalsa(self) -> ASTNode:
         """PFALSA -> else { <CMDS> } | λ"""
@@ -286,7 +438,17 @@ class Parser:
             node.valor = token.valor
             self.advance()
         else:
-            raise SyntaxError(f"Operador relacional inválido: {token.tipo}")
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Operador relacional inválido",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['EQUALS', 'NOT_EQUALS', 'GREATER_EQUAL', 'LESS_EQUAL', 'GREATER', 'LESS'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
         return node
     
     def expressao(self) -> ASTNode:
@@ -336,7 +498,17 @@ class Parser:
             node.add_child(expr)
             self.consume(['RPAREN'])
         else:
-            raise SyntaxError(f"Fator inválido: {token.tipo}")
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Fator inválido",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['ID', 'NUMERO_REAL', 'LPAREN'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
         
         return node
     
@@ -360,7 +532,17 @@ class Parser:
             node.valor = token.valor
             self.advance()
         else:
-            raise SyntaxError(f"Operador aditivo inválido: {token.tipo}")
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Operador aditivo inválido",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['PLUS', 'MINUS'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
         return node
     
     def mais_fatores(self) -> ASTNode:
@@ -383,5 +565,15 @@ class Parser:
             node.valor = token.valor
             self.advance()
         else:
-            raise SyntaxError(f"Operador multiplicativo inválido: {token.tipo}")
+            contexto = self.get_context(token.linha)
+            erro = SyntaxError(
+                message="Operador multiplicativo inválido",
+                linha=token.linha,
+                coluna=token.coluna,
+                token_atual=token,
+                tokens_esperados=['MULTIPLY', 'DIVIDE'],
+                contexto=contexto
+            )
+            self.erros.append(erro)
+            raise erro
         return node

@@ -20,6 +20,9 @@ def main():
         print("  --compile: Apenas compilar (gerar código objeto)")
         print("  --execute: Apenas executar código objeto existente")
         print("  --full: Compilar e executar (padrão)")
+        print("  --tokens: Mostrar lista de tokens durante a compilação")
+        print("  --ast: Mostrar árvore sintática abstrata (AST)")
+        print("  --debug: Modo debug (inclui tokens e AST)")
         sys.exit(1)
     
     input_file = sys.argv[1]
@@ -59,11 +62,34 @@ def compile_file(input_file):
     tokens = lexer.tokenize(source_code)
     print(f"   {len(tokens)} tokens encontrados")
     
+    # Imprimir tokens se solicitado
+    if '--debug' in sys.argv or '--tokens' in sys.argv:
+        print("\n=== LISTA DE TOKENS ===")
+        lexer.print_tokens(tokens)
+    
     # Análise Sintática
     print("2. Análise Sintática...")
     parser = Parser(tokens)
-    ast = parser.parse()
-    print("   Análise sintática concluída")
+    
+    # Fornecer linhas do código fonte para contexto de erro
+    source_lines = source_code.split('\n')
+    parser.set_source_lines(source_lines)
+    
+    try:
+        ast = parser.parse()
+        print("   Análise sintática concluída")
+        
+        # Imprimir AST se solicitado
+        if '--debug' in sys.argv or '--ast' in sys.argv:
+            print("\n=== ÁRVORE SINTÁTICA ABSTRATA (AST) ===")
+            parser.print_ast()
+            
+    except Exception as e:
+        print("   Análise sintática falhou!")
+        parser.print_erros()
+        print("\n=== COMPILAÇÃO INTERROMPIDA ===")
+        print("Corrija os erros sintáticos antes de prosseguir.")
+        sys.exit(1)
     
     # Análise Semântica
     print("3. Análise Semântica...")
